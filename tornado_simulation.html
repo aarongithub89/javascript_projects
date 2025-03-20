@@ -1,0 +1,1408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Tornado Farms</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #2a3a4a; }
+    canvas { display: block; }
+    #title {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: white;
+      font-family: Arial, sans-serif;
+      font-size: 24px;
+      text-shadow: 0 0 5px #00ccff;
+      z-index: 5;
+    }
+    #crosshair {
+      position: absolute;
+      width: 20px;
+      height: 20px;
+      background: transparent;
+      border: 2px solid red;
+      border-radius: 50%;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+    }
+    #clickEffect {
+      position: absolute;
+      width: 30px;
+      height: 30px;
+      background: rgba(255, 0, 0, 0.5);
+      border-radius: 50%;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      opacity: 0;
+      transition: opacity 0.5s;
+    }
+    #score {
+      position: absolute;
+      top: 50px;
+      left: 20px;
+      color: white;
+      font-family: Arial, sans-serif;
+      font-size: 20px;
+      text-shadow: 0 0 5px #00ccff;
+      z-index: 5;
+    }
+  </style>
+  <!-- Import map for ES modules -->
+  <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.module.js"
+        }
+    }
+  </script>
+</head>
+<body>
+<div id="title">Tornado Farms</div>
+<div id="crosshair"></div>
+<div id="clickEffect"></div>
+<div id="score">Score: 0</div>
+<script type="module">
+  import * as THREE from 'three';
+
+  let scene, camera, renderer, score = 0;
+  const G = 0.05; // Gravity constant
+  let tornadoPos = new THREE.Vector3(0, 0, 0);
+  let targetPos = new THREE.Vector3(0, 0, 0);
+  let time = 0;
+
+  /**
+   * Initializes the Three.js scene, camera, and renderer for the game.
+   */
+  function setupScene() {
+    scene = new THREE.Scene();
+    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.set(0, 30, 60);
+    camera.lookAt(0, 0, 0);
+
+    renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const ambientLight = new THREE.AmbientLight(0x606060, 0.5);
+    scene.add(ambientLight);
+    const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+    directionalLight.position.set(50, 50, 50);
+    directionalLight.castShadow = true;
+    scene.add(directionalLight);
+  }
+
+  /**
+   * Sets up the game environment including ground, farmhouse, silo, etc.
+   */
+  function setupEnvironment() {
+    const groundGeo = new THREE.PlaneGeometry(200, 200, 10, 10);
+    const groundMat = new THREE.MeshLambertMaterial({ color: 0x4a8f2d, side: THREE.DoubleSide });
+    const ground = new THREE.Mesh(groundGeo, groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+    window.ground = ground;
+
+    const terrainGeo = new THREE.PlaneGeometry(400, 400, 10, 10);
+    const terrainMat = new THREE.MeshLambertMaterial({ color: 0x3a5f0b, side: THREE.DoubleSide });
+    const terrain = new THREE.Mesh(terrainGeo, terrainMat);
+    terrain.rotation.x = -Math.PI / 2;
+    terrain.position.y = -0.1;
+    scene.add(terrain);
+
+    const damagePatches = [];
+    const damagePoints = [];
+    const damageRadius = 5;
+    for (let i = 0; i < 32; i++) {
+      const angle = (i / 32) * Math.PI * 2;
+      const radius = damageRadius + (Math.random() - 0.5) * 2;
+      damagePoints.push(new THREE.Vector2(Math.cos(angle) * radius, Math.sin(angle) * radius));
+    }
+    const damageShape = new THREE.Shape(damagePoints);
+    const damageGeo = new THREE.ShapeGeometry(damageShape);
+    const damageMat = new THREE.MeshLambertMaterial({ color: 0x8b4513, side: THREE.DoubleSide });
+    for (let i = 0; i < 50; i++) {
+      const patch = new THREE.Mesh(damageGeo, damageMat);
+      patch.rotation.x = -Math.PI / 2;
+      patch.position.y = 0.01;
+      patch.visible = false;
+      scene.add(patch);
+      damagePatches.push(patch);
+    }
+    window.damagePatches = damagePatches;
+
+    const houseGroup = new THREE.Group();
+    const cubeGeo = new THREE.BoxGeometry(1, 1, 1);
+    const wallMat = new THREE.MeshLambertMaterial({ color: 0xdeb887 });
+    const roofMat = new THREE.MeshLambertMaterial({ color: 0x8b0000 });
+    const doorMat = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
+    for (let x = -5; x <= 3; x++) {
+      for (let y = 0; y < 5; y++) {
+        for (let z = -4; z <= 2; z++) {
+          if (x === -5 || x === 3 || z === -4 || z === 2) {
+            const mat = (x === -1 && y < 2 && z === 2) ? doorMat : wallMat;
+            const cube = new THREE.Mesh(cubeGeo, mat);
+            cube.position.set(x + 0.5, y + 0.5, z + 0.5);
+            cube.castShadow = true;
+            houseGroup.add(cube);
+          }
+        }
+      }
+    }
+    for (let x = -6; x <= 4; x++) {
+      for (let y = 5; y <= 7; y++) {
+        for (let z = -5; z <= 3; z++) {
+          const distFromCenter = Math.abs(x + 0.5);
+          if (y - 5 <= 4 - distFromCenter) {
+            const cube = new THREE.Mesh(cubeGeo, roofMat);
+            cube.position.set(x + 0.5, y + 0.5, z + 0.5);
+            cube.castShadow = true;
+            houseGroup.add(cube);
+          }
+        }
+      }
+    }
+    const chimneyMat = new THREE.MeshLambertMaterial({ color: 0x555555 });
+    for (let y = 5; y < 8; y++) {
+      const cube = new THREE.Mesh(cubeGeo, chimneyMat);
+      cube.position.set(4, y + 0.5, 0);
+      cube.castShadow = true;
+      houseGroup.add(cube);
+    }
+    houseGroup.position.set(-30, 0, 0);
+    scene.add(houseGroup);
+    window.houseGroup = houseGroup;
+
+    const siloGroup = new THREE.Group();
+    const siloMat = new THREE.MeshLambertMaterial({ color: 0xaaaaaa });
+    const siloRadius = 3;
+    const siloHeight = 12;
+    for (let y = 0; y < siloHeight; y++) {
+      for (let x = -siloRadius; x <= siloRadius; x++) {
+        for (let z = -siloRadius; z <= siloRadius; z++) {
+          const dist = Math.sqrt(x * x + z * z);
+          if (dist <= siloRadius && dist >= siloRadius - 1) {
+            const cube = new THREE.Mesh(cubeGeo, siloMat);
+            cube.position.set(x + 0.5, y + 0.5, z + 0.5);
+            cube.castShadow = true;
+            siloGroup.add(cube);
+          }
+        }
+      }
+    }
+    siloGroup.position.set(-20, 0, -10);
+    scene.add(siloGroup);
+    window.siloGroup = siloGroup;
+
+    const pondGeo = new THREE.CylinderGeometry(5, 5, 0.5, 32);
+    const pondMat = new THREE.MeshBasicMaterial({ color: 0x1e90ff, transparent: true, opacity: 0.8 });
+    const pond = new THREE.Mesh(pondGeo, pondMat);
+    pond.position.set(40, 0.25, 40);
+    scene.add(pond);
+    window.pond = pond;
+
+    const pondFenceGroup = new THREE.Group();
+    const pondPicketGeo = new THREE.BoxGeometry(0.2, 1, 0.1);
+    const pondPicketMat = new THREE.MeshLambertMaterial({ color: 0xfff0f0 });
+    for (let i = 0; i < 32; i++) {
+      const angle = (i / 32) * Math.PI * 2;
+      const picket = new THREE.Mesh(pondPicketGeo, pondPicketMat);
+      picket.position.set(40 + Math.cos(angle) * 5.5, 0.5, 40 + Math.sin(angle) * 5.5);
+      picket.rotation.y = -angle;
+      picket.castShadow = true;
+      pondFenceGroup.add(picket);
+    }
+    scene.add(pondFenceGroup);
+
+    const bushGroup = new THREE.Group();
+    for (let i = 0; i < 5; i++) {
+      const trunkHeight = 3 + Math.random() * 2;
+      const trunkGeo = new THREE.CylinderGeometry(0.3 + Math.random() * 0.2, 0.5 + Math.random() * 0.2, trunkHeight, 8);
+      const trunkMat = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
+      const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+      trunk.position.set(0, trunkHeight / 2, 0);
+      trunk.castShadow = true;
+
+      const foliageSize = 2 + Math.random() * 1.5;
+      const foliageGeo = new THREE.SphereGeometry(foliageSize, 12, 12);
+      const foliageMat = new THREE.MeshLambertMaterial({ color: 0x228b22 });
+      const foliage = new THREE.Mesh(foliageGeo, foliageMat);
+      foliage.position.set(0, trunkHeight + foliageSize * 0.5, 0);
+      foliage.castShadow = true;
+
+      const bush = new THREE.Group();
+      bush.add(trunk);
+      bush.add(foliage);
+      bush.position.set(20 + (Math.random() - 0.5) * 60, 0, 20 + (Math.random() - 0.5) * 60);
+      bushGroup.add(bush);
+    }
+    scene.add(bushGroup);
+    window.bushGroup = bushGroup;
+
+    const treeGroup = new THREE.Group();
+    const treeBlockGeo = new THREE.BoxGeometry(1, 1, 1);
+    const trunkMat = new THREE.MeshLambertMaterial({ color: 0x8b4513 });
+    const foliageMat = new THREE.MeshLambertMaterial({ color: 0x228b22 });
+    for (let side = 0; side < 4; side++) {
+      for (let i = 0; i < 5; i++) {
+        const trunkHeight = 4 + Math.random() * 2;
+        const tree = new THREE.Group();
+        for (let y = 0; y < trunkHeight; y++) {
+          const trunkBlock = new THREE.Mesh(treeBlockGeo, trunkMat);
+          trunkBlock.position.set(0, y + 0.5, 0);
+          trunkBlock.castShadow = true;
+          tree.add(trunkBlock);
+        }
+        const foliageRadius = 2;
+        for (let x = -foliageRadius; x <= foliageRadius; x++) {
+          for (let y = -foliageRadius; y <= foliageRadius; y++) {
+            for (let z = -foliageRadius; z <= foliageRadius; z++) {
+              const dist = Math.sqrt(x * x + y * y + z * z);
+              if (dist <= foliageRadius && dist >= foliageRadius - 1) {
+                const foliageBlock = new THREE.Mesh(treeBlockGeo, foliageMat);
+                foliageBlock.position.set(x, trunkHeight + 1.5 + y, z);
+                foliageBlock.castShadow = true;
+                tree.add(foliageBlock);
+              }
+            }
+          }
+        }
+        const offset = (i * 20) - 40;
+        if (side === 0) tree.position.set(offset, 0, 50);
+        if (side === 1) tree.position.set(50, 0, offset);
+        if (side === 2) tree.position.set(offset, 0, -50);
+        if (side === 3) tree.position.set(-50, 0, offset);
+        treeGroup.add(tree);
+      }
+    }
+    for (let i = 0; i < 5; i++) {
+      const trunkHeight = 4 + Math.random() * 2;
+      const tree = new THREE.Group();
+      for (let y = 0; y < trunkHeight; y++) {
+        const trunkBlock = new THREE.Mesh(treeBlockGeo, trunkMat);
+        trunkBlock.position.set(0, y + 0.5, 0);
+        trunkBlock.castShadow = true;
+        tree.add(trunkBlock);
+      }
+      const foliageRadius = 2;
+      for (let x = -foliageRadius; x <= foliageRadius; x++) {
+        for (let y = -foliageRadius; y <= foliageRadius; y++) {
+          for (let z = -foliageRadius; z <= foliageRadius; z++) {
+            const dist = Math.sqrt(x * x + y * y + z * z);
+            if (dist <= foliageRadius && dist >= foliageRadius - 1) {
+              const foliageBlock = new THREE.Mesh(treeBlockGeo, foliageMat);
+              foliageBlock.position.set(x, trunkHeight + 1.5 + y, z);
+              foliageBlock.castShadow = true;
+              tree.add(foliageBlock);
+            }
+          }
+        }
+      }
+      const angle = (i / 5) * Math.PI * 2;
+      const radius = 40 + Math.random() * 5;
+      tree.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
+      treeGroup.add(tree);
+    }
+    scene.add(treeGroup);
+    window.treeGroup = treeGroup;
+
+    const perimeterFenceGroup = new THREE.Group();
+    const picketGeo = new THREE.BoxGeometry(0.2, 2, 0.1);
+    const picketMat = new THREE.MeshLambertMaterial({ color: 0xfff0f0 });
+    const railGeo = new THREE.BoxGeometry(5, 0.2, 0.2);
+    const railMat = new THREE.MeshLambertMaterial({ color: 0xfff0f0 });
+    for (let side = 0; side < 4; side++) {
+      const offsetX = side === 0 || side === 2 ? 0 : (side === 1 ? 50 : -50);
+      const offsetZ = side === 1 || side === 3 ? 0 : (side === 0 ? 50 : -50);
+      const rotation = side % 2 === 0 ? 0 : Math.PI / 2;
+      for (let i = 0; i < 20; i++) {
+        const picket = new THREE.Mesh(picketGeo, picketMat);
+        picket.position.set(side % 2 === 0 ? (i * 5 - 50) : offsetX, 1, side % 2 === 0 ? offsetZ : (i * 5 - 50));
+        picket.castShadow = true;
+        picket.isDestructible = true;
+        picket.side = side;
+        picket.index = i;
+        perimeterFenceGroup.add(picket);
+      }
+      for (let i = 0; i < 19; i++) {
+        const topRail = new THREE.Mesh(railGeo, railMat);
+        topRail.position.set(side % 2 === 0 ? (i * 5 - 47.5) : offsetX, 1.8, side % 2 === 0 ? offsetZ : (i * 5 - 47.5));
+        topRail.rotation.y = rotation;
+        topRail.castShadow = true;
+        topRail.isDestructible = true;
+        topRail.side = side;
+        topRail.index = i;
+        perimeterFenceGroup.add(topRail);
+
+        const bottomRail = new THREE.Mesh(railGeo, railMat);
+        bottomRail.position.set(side % 2 === 0 ? (i * 5 - 47.5) : offsetX, 0.5, side % 2 === 0 ? offsetZ : (i * 5 - 47.5));
+        bottomRail.rotation.y = rotation;
+        bottomRail.castShadow = true;
+        bottomRail.isDestructible = true;
+        bottomRail.side = side;
+        bottomRail.index = i;
+        perimeterFenceGroup.add(bottomRail); // Fixed to bottomRail
+      }
+    }
+    scene.add(perimeterFenceGroup);
+    window.perimeterFenceGroup = perimeterFenceGroup;
+
+    const internalFenceGroup = new THREE.Group();
+    for (let i = 0; i < 10; i++) {
+      const picket = new THREE.Mesh(picketGeo, picketMat);
+      picket.position.set(i * 0.5 - 2.5, 1, 30);
+      picket.castShadow = true;
+      internalFenceGroup.add(picket);
+    }
+    const internalRailGeo = new THREE.BoxGeometry(5, 0.2, 0.2);
+    const topInternalRail = new THREE.Mesh(internalRailGeo, railMat);
+    topInternalRail.position.set(0, 1.8, 30);
+    topInternalRail.castShadow = true;
+    internalFenceGroup.add(topInternalRail);
+    const bottomInternalRail = new THREE.Mesh(internalRailGeo, railMat);
+    bottomInternalRail.position.set(0, 0.5, 30);
+    bottomInternalRail.castShadow = true;
+    internalFenceGroup.add(bottomInternalRail); // Fixed to bottomInternalRail
+    scene.add(internalFenceGroup);
+    window.internalFenceGroup = internalFenceGroup;
+
+    const skyDomeGeo = new THREE.SphereGeometry(200, 32, 32, 0, Math.PI * 2, 0, Math.PI / 2);
+    const skyDomeMat = new THREE.MeshBasicMaterial({ color: 0x2a3a4a, side: THREE.BackSide, opacity: 0.9, transparent: true });
+    const skyDome = new THREE.Mesh(skyDomeGeo, skyDomeMat);
+    skyDome.position.y = -50;
+    scene.add(skyDome);
+
+    const cloudGroup = new THREE.Group();
+    for (let i = 0; i < 10; i++) {
+      const cloudPoints = [];
+      const cloudRadius = 20 + Math.random() * 10;
+      for (let j = 0; j < 16; j++) {
+        const angle = (j / 16) * Math.PI * 2;
+        const radius = cloudRadius + (Math.random() - 0.5) * 5;
+        cloudPoints.push(new THREE.Vector2(Math.cos(angle) * radius, Math.sin(angle) * radius));
+      }
+      const cloudShape = new THREE.Shape(cloudPoints);
+      const cloudGeo = new THREE.ShapeGeometry(cloudShape);
+      const cloudMat = new THREE.MeshBasicMaterial({ color: 0x666666, opacity: 0.5, transparent: true, side: THREE.DoubleSide });
+      const cloud = new THREE.Mesh(cloudGeo, cloudMat);
+      cloud.position.set((Math.random() - 0.5) * 600, 70 + Math.random() * 30, (Math.random() - 0.5) * 600);
+      cloud.rotation.x = Math.PI / 2;
+      cloudGroup.add(cloud);
+    }
+    scene.add(cloudGroup);
+    window.cloudGroup = cloudGroup;
+  }
+
+  /**
+   * Sets up tornado particles, dust, and rain effects.
+   */
+  function setupTornadoAndEffects() {
+    const tornadoParticles = [];
+    const tornadoGeo = new THREE.SphereGeometry(0.2, 8, 8);
+    for (let i = 0; i < 500; i++) {
+      const heightFactor = (i * 0.1) / 30;
+      const color = new THREE.Color(0x666666).lerp(new THREE.Color(0x444444), heightFactor);
+      const tornadoMat = new THREE.MeshBasicMaterial({ color: color, opacity: 0.98, transparent: true });
+      const particle = new THREE.Mesh(tornadoGeo, tornadoMat);
+      particle.position.set(0, i * 0.1, 0);
+      scene.add(particle);
+      tornadoParticles.push({
+        mesh: particle,
+        angle: Math.random() * Math.PI * 2,
+        baseRadius: (Math.random() * 2 + 3 * heightFactor) * (1 + Math.sin(i * 0.1) * 0.3),
+        height: i * 0.1 * (0.8 + Math.random() * 0.4),
+        turbulenceOffset: Math.random() * 100
+      });
+    }
+    window.tornadoParticles = tornadoParticles;
+
+    const baseDustParticles = [];
+    const baseDustGeo = new THREE.SphereGeometry(0.2, 4, 4);
+    const baseDustMat = new THREE.MeshBasicMaterial({ color: 0x8b4513, opacity: 0.7, transparent: true });
+    for (let i = 0; i < 100; i++) {
+      const dust = new THREE.Mesh(baseDustGeo, baseDustMat);
+      dust.position.set(0, 0.2, 0);
+      scene.add(dust);
+      baseDustParticles.push({ mesh: dust, angle: Math.random() * Math.PI * 2, radius: Math.random() * 5, turbulenceOffset: Math.random() * 100 });
+    }
+    window.baseDustParticles = baseDustParticles;
+
+    const dustParticles = [];
+    const dustGeo = new THREE.SphereGeometry(0.1, 4, 4);
+    const dustMat = new THREE.MeshBasicMaterial({ color: 0x8b4513, opacity: 0.5, transparent: true });
+    for (let i = 0; i < 150; i++) {
+      const dust = new THREE.Mesh(dustGeo, dustMat);
+      dust.position.set(0, i * 0.05, 0);
+      scene.add(dust);
+      dustParticles.push({ mesh: dust, angle: Math.random() * Math.PI * 2, radius: Math.random() * 2, height: i * 0.05, turbulenceOffset: Math.random() * 100 });
+    }
+    window.dustParticles = dustParticles;
+
+    const rainParticles = [];
+    const rainGeo = new THREE.BoxGeometry(0.05, 0.5, 0.05);
+    const rainMat = new THREE.MeshBasicMaterial({ color: 0x87ceeb });
+    for (let i = 0; i < 500; i++) {
+      const rainDrop = new THREE.Mesh(rainGeo, rainMat);
+      rainDrop.position.set((Math.random() - 0.5) * 600, 70 + Math.random() * 50, (Math.random() - 0.5) * 600);
+      rainDrop.velocity = new THREE.Vector3(0, -1, 0);
+      scene.add(rainDrop);
+      rainParticles.push(rainDrop);
+    }
+    window.rainParticles = rainParticles;
+
+    const lightningGeo = new THREE.BufferGeometry();
+    const lightningMat = new THREE.LineBasicMaterial({ color: 0x87ceeb });
+    const lightningPoints = [];
+    lightningGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(60), 3));
+    const lightningLine = new THREE.Line(lightningGeo, lightningMat);
+    scene.add(lightningLine);
+    window.lightningLine = lightningLine;
+    window.lightningPoints = lightningPoints;
+
+    const lightningLight = new THREE.PointLight(0x87ceeb, 0, 200);
+    lightningLight.position.set(0, 50, 0);
+    scene.add(lightningLight);
+    window.lightningLight = lightningLight;
+  }
+
+  /**
+   * Sets up all debris objects and disintegration particles.
+   */
+  function setupDebris() {
+    const disintegrationParticles = [];
+    const smallCubeGeo = new THREE.BoxGeometry(0.2, 0.2, 0.2);
+    const tinyCubeGeo = new THREE.BoxGeometry(0.1, 0.1, 0.1);
+    const thinRectGeo = new THREE.BoxGeometry(0.1, 0.5, 0.05);
+    const smallSphereGeo = new THREE.SphereGeometry(0.1, 4, 4);
+    for (let i = 0; i < 4000; i++) {
+      let geo = [smallCubeGeo, tinyCubeGeo, thinRectGeo, smallSphereGeo][i % 4];
+      const particle = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffffff }));
+      particle.velocity = new THREE.Vector3(0, 0, 0);
+      particle.inTornado = false;
+      particle.timeInTornado = 0;
+      particle.visible = false;
+      particle.angle = Math.random() * Math.PI * 2;
+      particle.castShadow = true;
+      particle.behavior = 'swirl';
+      particle.lostTime = 0;
+      particle.isSucked = false;
+      particle.lifeTime = 0;
+      particle.tornadoHeight = Math.random() * 30;
+      particle.tornadoRadius = Math.random() * 3 + (particle.tornadoHeight * 0.03);
+      particle.turbulenceOffset = Math.random() * 100;
+      particle.isPermanent = false;
+      particle.semiPermanent = false;
+      particle.semiPermanentDuration = 20;
+      particle.startPosition = new THREE.Vector3();
+      particle.maxRange = 20 + Math.random() * 10;
+      scene.add(particle);
+      disintegrationParticles.push(particle);
+    }
+    window.disintegrationParticles = disintegrationParticles;
+
+    const debris = [];
+    const debrisTypes = [
+      { geo: new THREE.BoxGeometry(2, 0.2, 0.5), color: 0xff5555, type: 'fence' },
+      { geo: new THREE.CylinderGeometry(2, 2, 2, 16), color: 0xffff00, type: 'hay' },
+      { geo: new THREE.BoxGeometry(1, 1, 1), color: 0x55ff55, type: 'crate' }
+    ];
+    for (let i = 0; i < 20; i++) {
+      const type = debrisTypes[i % 3];
+      const mat = new THREE.MeshLambertMaterial({ color: type.color });
+      const obj = new THREE.Mesh(type.geo, mat);
+      obj.position.set(20 + (Math.random() - 0.5) * 60, type.type === 'hay' ? 1 : 1, 20 + (Math.random() - 0.5) * 60);
+      obj.velocity = new THREE.Vector3(0, 0, 0);
+      obj.inTornado = false;
+      obj.timeInTornado = 0;
+      obj.angle = Math.random() * Math.PI * 2;
+      obj.castShadow = true;
+      obj.willBeLost = Math.random() > 0.5;
+      obj.lostTime = 5 + Math.random() * 5;
+      obj.isSucked = false;
+      obj.isDestroyed = false;
+      scene.add(obj);
+      debris.push(obj);
+    }
+    window.debris = debris;
+
+    const picketDebris = [];
+    const picketGeo = new THREE.BoxGeometry(0.2, 2, 0.1);
+    const picketMat = new THREE.MeshLambertMaterial({ color: 0xfff0f0 });
+    for (let i = 0; i < 10; i++) {
+      const picket = new THREE.Mesh(picketGeo, picketMat);
+      picket.position.set(i * 0.5 - 5, 1, 30);
+      picket.velocity = new THREE.Vector3(0, 0, 0);
+      picket.inTornado = false;
+      picket.visible = false;
+      picket.timeInTornado = 0;
+      picket.angle = Math.random() * Math.PI * 2;
+      picket.castShadow = true;
+      picket.willBeLost = Math.random() > 0.5;
+      picket.lostTime = 5 + Math.random() * 5;
+      picket.isSucked = false;
+      picket.isDestroyed = false;
+      scene.add(picket);
+      picketDebris.push(picket);
+    }
+    window.picketDebris = picketDebris;
+
+    const houseDebris = [];
+    window.houseGroup.children.forEach(cube => {
+      const newCube = cube.clone();
+      newCube.velocity = new THREE.Vector3(0, 0, 0);
+      newCube.inTornado = false;
+      newCube.visible = false;
+      newCube.timeInTornado = 0;
+      newCube.angle = Math.random() * Math.PI * 2;
+      newCube.castShadow = true;
+      newCube.destroyed = false;
+      newCube.willBeLost = Math.random() > 0.5;
+      newCube.lostTime = 5 + Math.random() * 5;
+      newCube.isSucked = false;
+      newCube.isDestroyed = false;
+      scene.add(newCube);
+      houseDebris.push(newCube);
+    });
+    window.houseDebris = houseDebris;
+
+    const siloDebris = [];
+    window.siloGroup.children.forEach(cube => {
+      const cubeClone = cube.clone();
+      cubeClone.velocity = new THREE.Vector3(0, 0, 0);
+      cubeClone.inTornado = false;
+      cubeClone.visible = false;
+      cubeClone.timeInTornado = 0;
+      cubeClone.angle = Math.random() * Math.PI * 2;
+      cubeClone.castShadow = true;
+      cubeClone.destroyed = false;
+      cubeClone.willBeLost = Math.random() > 0.5;
+      cubeClone.lostTime = 5 + Math.random() * 5;
+      cubeClone.isSucked = false;
+      cubeClone.isDestroyed = false;
+      scene.add(cubeClone);
+      siloDebris.push(cubeClone);
+    });
+    window.siloDebris = siloDebris;
+
+    const treeDebris = [];
+    window.treeGroup.children.forEach(tree => {
+      const trunkBlocks = [];
+      const foliageBlocks = [];
+      tree.children.forEach(block => {
+        const blockClone = block.clone();
+        blockClone.velocity = new THREE.Vector3(0, 0, 0);
+        blockClone.inTornado = false;
+        blockClone.timeInTornado = 0;
+        blockClone.visible = false;
+        blockClone.angle = Math.random() * Math.PI * 2;
+        blockClone.castShadow = true;
+        blockClone.willBeLost = Math.random() > 0.5;
+        blockClone.lostTime = 5 + Math.random() * 5;
+        blockClone.isSucked = false;
+        blockClone.isDestroyed = false;
+        scene.add(blockClone);
+        (block.material.color.getHex() === 0x8b4513 ? trunkBlocks : foliageBlocks).push(blockClone);
+      });
+      const totalBlocks = trunkBlocks.length + foliageBlocks.length;
+      const threshold = Math.floor(totalBlocks / 3);
+      treeDebris.push({ tree, trunkBlocks, foliageBlocks, totalBlocks, threshold, affectedBlocks: 0, destroyed: false });
+    });
+    window.treeDebris = treeDebris;
+
+    const leafParticles = [];
+    const leafGeo = new THREE.SphereGeometry(0.1, 4, 4);
+    const leafMat = new THREE.MeshLambertMaterial({ color: 0x228b22 });
+    for (let i = 0; i < 100; i++) {
+      const leaf = new THREE.Mesh(leafGeo, leafMat);
+      leaf.velocity = new THREE.Vector3(0, 0, 0);
+      leaf.inTornado = false;
+      leaf.timeInTornado = 0;
+      leaf.visible = false;
+      leaf.angle = Math.random() * Math.PI * 2;
+      leaf.castShadow = true;
+      leaf.willBeLost = Math.random() > 0.5;
+      leaf.lostTime = 5 + Math.random() * 5;
+      leaf.isSucked = false;
+      scene.add(leaf);
+      leafParticles.push(leaf);
+    }
+    window.leafParticles = leafParticles;
+
+    const bushDebris = [];
+    window.bushGroup.children.forEach(bush => {
+      const foliageClone = bush.children[1].clone();
+      foliageClone.velocity = new THREE.Vector3(0, 0, 0);
+      foliageClone.inTornado = false;
+      foliageClone.timeInTornado = 0;
+      foliageClone.visible = false;
+      foliageClone.angle = Math.random() * Math.PI * 2;
+      foliageClone.castShadow = true;
+      foliageClone.willBeLost = Math.random() > 0.5;
+      foliageClone.lostTime = 5 + Math.random() * 5;
+      foliageClone.isSucked = false;
+      foliageClone.isDestroyed = false;
+      scene.add(foliageClone);
+      bushDebris.push({ mesh: foliageClone, bush });
+    });
+    window.bushDebris = bushDebris;
+
+    const perimeterFenceDebris = [];
+    window.perimeterFenceGroup.children.forEach(obj => {
+      if (obj.isDestructible) {
+        const clone = obj.clone();
+        clone.velocity = new THREE.Vector3(0, 0, 0);
+        clone.inTornado = false;
+        clone.timeInTornado = 0;
+        clone.visible = false;
+        clone.angle = Math.random() * Math.PI * 2;
+        clone.castShadow = true;
+        clone.willBeLost = Math.random() > 0.5;
+        clone.lostTime = 5 + Math.random() * 5;
+        clone.isSucked = false;
+        clone.isDestroyed = false;
+        scene.add(clone);
+        perimeterFenceDebris.push({ original: obj, debris: clone });
+      }
+    });
+    window.perimeterFenceDebris = perimeterFenceDebris;
+  }
+
+  /**
+   * Sets up mouse controls and window resize event listeners.
+   */
+  function setupEventListeners() {
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+    const clickEffect = document.getElementById('clickEffect');
+    const crosshair = document.getElementById('crosshair');
+
+    renderer.domElement.addEventListener('click', (event) => {
+      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      const intersects = raycaster.intersectObject(window.ground);
+      if (intersects.length > 0) {
+        const point = intersects[0].point;
+        targetPos.set(point.x, 0, point.z);
+        clickEffect.style.left = event.clientX + 'px';
+        clickEffect.style.top = event.clientY + 'px';
+        clickEffect.style.opacity = '1';
+        setTimeout(() => clickEffect.style.opacity = '0', 500);
+      }
+    });
+
+    document.addEventListener('mousemove', (event) => {
+      crosshair.style.left = event.clientX + 'px';
+      crosshair.style.top = event.clientY + 'px';
+    });
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  }
+
+  /**
+   * Creates disintegration particles for destroyed objects.
+   * @param {THREE.Vector3} position - Starting position of particles.
+   * @param {number} color - Color of the particles.
+   * @param {string} type - Type of object being destroyed.
+   * @param {number} totalCount - Total number of particles to create.
+   */
+  function createDisintegrationParticles(position, color, type, totalCount = 20) {
+    const geoType = { 'house': 'cube', 'ground': 'cube', 'tree': 'tinyCube', 'fence': 'rect', 'bush': 'sphere', 'silo': 'cube' }[type];
+    const swirlCount = Math.floor(Math.random() * (totalCount + 1));
+    const flyUpCount = Math.floor(Math.random() * (totalCount - swirlCount + 1));
+    const fallCount = Math.floor(Math.random() * (totalCount - swirlCount - flyUpCount + 1));
+    const flyOutCount = totalCount - swirlCount - flyUpCount - fallCount;
+    const permanentSwirlCount = Math.floor(swirlCount * 0.3);
+    const semiPermanentSwirlCount = Math.floor(swirlCount * 0.2);
+    let assignedPermanent = 0;
+    let assignedSemiPermanent = 0;
+
+    const behaviors = [
+      { count: swirlCount, behavior: 'swirl', lostTime: 10 },
+      { count: flyUpCount, behavior: 'flyUp', lostTime: 3 + Math.random() * 2 },
+      { count: fallCount, behavior: 'fall', lostTime: 3 + Math.random() * 2 },
+      { count: flyOutCount, behavior: 'flyOut', lostTime: 3 + Math.random() * 2 }
+    ];
+
+    behaviors.forEach(({ count, behavior, lostTime }) => {
+      for (let i = 0; i < count; i++) {
+        const particle = window.disintegrationParticles.find(p => !p.visible && p.geometry.type === (geoType === 'cube' ? 'BoxGeometry' : geoType === 'tinyCube' ? 'BoxGeometry' : geoType === 'rect' ? 'BoxGeometry' : 'SphereGeometry'));
+        if (particle) {
+          particle.visible = true;
+          particle.position.copy(position);
+          particle.startPosition.copy(position);
+          particle.material.color.setHex(color);
+          particle.velocity.set((Math.random() - 0.5) * 2, behavior === 'flyUp' ? 2 + Math.random() * 2 : 1 + Math.random(), (Math.random() - 0.5) * 2);
+          particle.inTornado = false;
+          particle.isSucked = false;
+          particle.timeInTornado = 0;
+          particle.lifeTime = 0;
+          particle.tornadoHeight = Math.random() * 30;
+          particle.tornadoRadius = Math.random() * 3 + (particle.tornadoHeight * 0.03);
+          particle.behavior = behavior;
+          particle.lostTime = lostTime;
+          if (behavior === 'swirl') {
+            if (assignedPermanent < permanentSwirlCount && window.permanentParticleCount < window.maxPermanentParticles) {
+              particle.isPermanent = true;
+              window.permanentParticleCount++;
+              assignedPermanent++;
+            } else if (assignedSemiPermanent < semiPermanentSwirlCount) {
+              particle.semiPermanent = true;
+              assignedSemiPermanent++;
+            }
+          }
+        }
+      }
+    });
+  }
+
+  /**
+   * Updates the tornado's position, scale, and particle effects.
+   */
+  function updateTornado() {
+    const tornadoScale = 1 + Math.sin(time * 0.5) * 0.1;
+    const direction = targetPos.clone().sub(tornadoPos);
+    const distance = direction.length();
+    if (distance > 0.1) {
+      direction.normalize();
+      tornadoPos.add(direction.multiplyScalar(Math.min(0.5, distance)));
+    }
+
+    window.tornadoParticles.forEach(p => {
+      p.angle += 0.1 * (1 + p.height / 30);
+      const heightFactor = p.height / 30;
+      const wobble = Math.sin(time * 0.3 + p.turbulenceOffset) * 0.5;
+      const turbulence = Math.sin(time * 0.5 + p.turbulenceOffset) * 0.5 + Math.cos(time * 0.3 + p.turbulenceOffset) * 0.3;
+      p.radius = p.baseRadius * tornadoScale + wobble;
+      p.mesh.position.set(
+        tornadoPos.x + Math.cos(p.angle) * (p.radius + turbulence),
+        p.height + turbulence * 0.5,
+        tornadoPos.z + Math.sin(p.angle) * (p.radius + turbulence)
+      );
+    });
+
+    window.dustParticles.forEach(d => {
+      d.angle += 0.15;
+      d.height += 0.1;
+      if (d.height > 30) d.height = 0;
+      const turbulence = Math.sin(time * 0.5 + d.turbulenceOffset) * 0.3 + Math.cos(time * 0.2 + d.turbulenceOffset) * 0.2;
+      d.mesh.position.set(
+        tornadoPos.x + Math.cos(d.angle) * (d.radius + turbulence),
+        d.height + turbulence * 0.3,
+        tornadoPos.z + Math.sin(d.angle) * (d.radius + turbulence)
+      );
+    });
+
+    window.baseDustParticles.forEach(d => {
+      d.angle += 0.2;
+      d.radius = Math.random() * 5 * tornadoScale;
+      const turbulence = Math.sin(time * 0.5 + d.turbulenceOffset) * 0.2 + Math.cos(time * 0.3 + d.turbulenceOffset) * 0.1;
+      d.mesh.position.set(
+        tornadoPos.x + Math.cos(d.angle) * (d.radius + turbulence),
+        0.2,
+        tornadoPos.z + Math.sin(d.angle) * (d.radius + turbulence)
+      );
+    });
+
+    const patch = window.damagePatches.find(p => !p.visible);
+    if (patch) {
+      patch.visible = true;
+      patch.position.set(tornadoPos.x, 0.01, tornadoPos.z);
+    }
+
+    if (window.pond.geometry.vertices) {
+      window.pond.geometry.vertices.forEach(vertex => {
+        const dist = Math.sqrt(vertex.x * vertex.x + vertex.z * vertex.z);
+        vertex.y = Math.sin(dist * 2 - time * 2) * 0.1;
+      });
+      window.pond.geometry.verticesNeedUpdate = true;
+    }
+    window.tornadoScale = tornadoScale;
+  }
+
+  /**
+   * Updates all debris interactions with the tornado.
+   */
+  function updateDebris() {
+    window.debrisInTornado = 0;
+
+    window.debris.forEach(obj => {
+      if (obj.isDestroyed) return;
+      const dist = obj.position.distanceTo(tornadoPos);
+      if (dist < 10 * window.tornadoScale && !obj.inTornado && window.debrisInTornado < window.maxDebrisCapacity) {
+        obj.inTornado = true;
+        obj.isSucked = true;
+      }
+      if (obj.inTornado && obj.isSucked) {
+        createDisintegrationParticles(obj.position, obj.material.color.getHex(), 'ground', 20);
+        obj.visible = false;
+        obj.inTornado = false;
+        obj.isDestroyed = true;
+        updateScore(30);
+      }
+    });
+
+    window.picketDebris.forEach(obj => {
+      if (!obj.visible || obj.isDestroyed) return;
+      if (obj.inTornado) window.debrisInTornado++;
+      const dist = obj.position.distanceTo(tornadoPos);
+      if (dist < 10 * window.tornadoScale && !obj.inTornado && window.debrisInTornado < window.maxDebrisCapacity) {
+        obj.inTornado = true;
+        obj.isSucked = true;
+      }
+      if (obj.inTornado && obj.isSucked) {
+        createDisintegrationParticles(obj.position, obj.material.color.getHex(), 'fence', 10);
+        obj.visible = false;
+        obj.inTornado = false;
+        obj.isDestroyed = true;
+        updateScore(30);
+      }
+    });
+
+    window.perimeterFenceDebris.forEach(obj => {
+      if (!obj.debris.visible || obj.debris.isDestroyed) return;
+      if (obj.inTornado) window.debrisInTornado++;
+      const dist = obj.debris.position.distanceTo(tornadoPos);
+      if (dist < 10 * window.tornadoScale && !obj.inTornado && window.debrisInTornado < window.maxDebrisCapacity) {
+        obj.inTornado = true;
+        obj.isSucked = true;
+      }
+      if (obj.inTornado && obj.isSucked) {
+        createDisintegrationParticles(obj.debris.position, obj.debris.material.color.getHex(), 'fence', 10);
+        obj.debris.visible = false;
+        obj.inTornado = false;
+        obj.debris.isDestroyed = true;
+        updateScore(30);
+      }
+    });
+
+    window.houseDebris.forEach(obj => {
+      if (!obj.visible || obj.isDestroyed) return;
+      if (obj.inTornado) window.debrisInTornado++;
+      const dist = obj.position.distanceTo(tornadoPos);
+      if (dist < 10 * window.tornadoScale && !obj.inTornado && window.debrisInTornado < window.maxDebrisCapacity) {
+        obj.inTornado = true;
+        obj.isSucked = true;
+      }
+      if (obj.inTornado && obj.isSucked) {
+        createDisintegrationParticles(obj.position, obj.material.color.getHex(), 'house', 10);
+        obj.visible = false;
+        obj.inTornado = false;
+        obj.isDestroyed = true;
+        if (!window.houseDestroyed) updateScore(100);
+      }
+    });
+
+    window.siloDebris.forEach(obj => {
+      if (!obj.visible || obj.isDestroyed) return;
+      if (obj.inTornado) window.debrisInTornado++;
+      const dist = obj.position.distanceTo(tornadoPos);
+      if (dist < 10 * window.tornadoScale && !obj.inTornado && window.debrisInTornado < window.maxDebrisCapacity) {
+        obj.inTornado = true;
+        obj.isSucked = true;
+      }
+      if (obj.inTornado && obj.isSucked) {
+        createDisintegrationParticles(obj.position, obj.material.color.getHex(), 'silo', 10);
+        obj.visible = false;
+        obj.inTornado = false;
+        obj.isDestroyed = true;
+        if (!window.siloDestroyed) updateScore(50);
+      }
+    });
+
+    window.leafParticles.forEach(obj => {
+      if (!obj.visible) return;
+      if (obj.inTornado) window.debrisInTornado++;
+      const dist = obj.position.distanceTo(tornadoPos);
+      if (dist < 10 * window.tornadoScale && !obj.inTornado && window.debrisInTornado < window.maxDebrisCapacity) {
+        obj.inTornado = true;
+        obj.isSucked = true;
+      }
+      if (obj.inTornado) {
+        if (obj.isSucked) {
+          const direction = tornadoPos.clone().sub(obj.position).normalize();
+          obj.velocity.add(direction.multiplyScalar(0.5));
+          obj.velocity.y += 0.3;
+          if (dist < 6 * window.tornadoScale) obj.isSucked = false;
+        } else {
+          obj.angle += 0.1 * (1 + obj.position.y / 30);
+          const radialForce = 0.03 * (10 * window.tornadoScale - dist) / (10 * window.tornadoScale);
+          obj.velocity.x += Math.cos(obj.angle) * radialForce;
+          obj.velocity.z += Math.sin(obj.angle) * radialForce;
+          obj.velocity.y += 0.08 * window.tornadoScale - G;
+          if (dist < 6 * window.tornadoScale) {
+            obj.position.y += 0.2;
+            obj.position.x = tornadoPos.x + Math.cos(obj.angle) * (4 + Math.min(obj.position.y / 30, 1) * 2) * window.tornadoScale;
+            obj.position.z = tornadoPos.z + Math.sin(obj.angle) * (4 + Math.min(obj.position.y / 30, 1) * 2) * window.tornadoScale;
+            obj.timeInTornado += 0.1;
+            if (!obj.willBeLost && obj.timeInTornado > obj.lostTime) {
+              obj.inTornado = false;
+              obj.velocity.set((Math.random() - 0.5) * 5, 2, (Math.random() - 0.5) * 5);
+            }
+          }
+        }
+      }
+      obj.velocity.y -= G;
+      obj.velocity.multiplyScalar(0.98);
+      obj.position.add(obj.velocity);
+      if (obj.position.y < 1) {
+        obj.position.y = 1;
+        obj.velocity.y = 0;
+        obj.inTornado = false;
+      }
+    });
+
+    window.bushDebris.forEach(obj => {
+      if (!obj.mesh.visible || obj.mesh.isDestroyed) return;
+      if (obj.inTornado) window.debrisInTornado++;
+      const dist = obj.mesh.position.distanceTo(tornadoPos);
+      if (dist < 10 * window.tornadoScale && !obj.inTornado && window.debrisInTornado < window.maxDebrisCapacity) {
+        obj.inTornado = true;
+        obj.isSucked = true;
+      }
+      if (obj.inTornado && obj.isSucked) {
+        createDisintegrationParticles(obj.mesh.position, obj.mesh.material.color.getHex(), 'bush', 20);
+        obj.mesh.visible = false;
+        obj.inTornado = false;
+        obj.mesh.isDestroyed = true;
+        updateScore(10);
+      }
+    });
+
+    window.treeDebris.forEach(obj => {
+      if (obj.destroyed) return;
+      const dist = obj.tree.position.distanceTo(tornadoPos);
+      if (dist < 10 * window.tornadoScale) {
+        obj.tree.visible = false;
+        const allBlocks = [...obj.trunkBlocks, ...obj.foliageBlocks];
+        allBlocks.forEach(block => {
+          if (!block.visible && !block.isDestroyed) {
+            block.visible = true;
+            block.position.copy(block.position).add(obj.tree.position);
+            block.velocity.set((Math.random() - 0.5) * 2, 2, (Math.random() - 0.5) * 2);
+          }
+          const blockDist = block.position.distanceTo(tornadoPos);
+          if (blockDist < 10 * window.tornadoScale && !block.inTornado) {
+            block.inTornado = true;
+            block.isSucked = true;
+            obj.affectedBlocks++;
+          }
+          if (block.inTornado && block.isSucked) {
+            createDisintegrationParticles(block.position, block.material.color.getHex(), 'tree', 10);
+            block.visible = false;
+            block.inTornado = false;
+            block.isDestroyed = true;
+          }
+        });
+        if (obj.affectedBlocks >= obj.threshold) {
+          allBlocks.forEach(block => {
+            if (!block.isDestroyed) {
+              block.visible = true;
+              block.position.copy(block.position).add(obj.tree.position);
+              block.inTornado = true;
+              block.isSucked = true;
+              const blockDist = block.position.distanceTo(tornadoPos);
+              if (blockDist < 10 * window.tornadoScale) {
+                createDisintegrationParticles(block.position, block.material.color.getHex(), 'tree', 10);
+                block.visible = false;
+                block.inTornado = false;
+                block.isDestroyed = true;
+              }
+            }
+          });
+          obj.destroyed = true;
+          updateScore(20);
+        }
+      }
+    });
+
+    window.disintegrationParticles.forEach(particle => {
+      if (!particle.visible) return;
+      const dist = particle.position.distanceTo(tornadoPos);
+      const distanceTraveled = particle.position.distanceTo(particle.startPosition);
+
+      if ((particle.isPermanent || particle.semiPermanent) && particle.inTornado && !particle.isSucked) {
+        particle.angle += 0.1 * (1 + particle.tornadoHeight / 30);
+        const heightFactor = particle.tornadoHeight / 30;
+        const wobble = Math.sin(time * 0.3 + particle.turbulenceOffset) * 0.5;
+        const turbulence = Math.sin(time * 0.5 + particle.turbulenceOffset) * 0.5 + Math.cos(time * 0.3 + particle.turbulenceOffset) * 0.3;
+        particle.tornadoRadius = (Math.random() * 2 + 3 * heightFactor) * window.tornadoScale + wobble;
+        particle.position.set(
+          tornadoPos.x + Math.cos(particle.angle) * (particle.tornadoRadius + turbulence),
+          particle.tornadoHeight + turbulence * 0.5,
+          tornadoPos.z + Math.sin(particle.angle) * (particle.tornadoRadius + turbulence)
+        );
+        if (particle.semiPermanent) {
+          particle.timeInTornado += 0.1;
+          if (particle.timeInTornado > particle.semiPermanentDuration) {
+            particle.inTornado = false;
+            particle.semiPermanent = false;
+            particle.behavior = 'flungOut';
+            const outwardDirection = particle.position.clone().sub(tornadoPos).normalize();
+            particle.velocity.set(outwardDirection.x * (3 + Math.random() * 2), 1 + Math.random() * 2, outwardDirection.z * (3 + Math.random() * 2));
+          }
+        }
+      } else {
+        if (!particle.isPermanent && !particle.semiPermanent && distanceTraveled > particle.maxRange && !particle.inTornado) {
+          particle.velocity.y -= G * 2;
+          if (particle.position.y <= 0) {
+            particle.position.y = 0;
+            particle.velocity.multiplyScalar(0.5);
+            particle.velocity.y = Math.abs(particle.velocity.y) * 0.3;
+            if (particle.velocity.length() < 0.1) {
+              particle.visible = false;
+            }
+          }
+        } else if (!particle.isPermanent && !particle.semiPermanent && particle.behavior !== 'flungOut') {
+          particle.lifeTime += 0.1;
+          if (particle.lifeTime > particle.lostTime && !particle.inTornado) {
+            particle.visible = false;
+            return;
+          }
+        }
+
+        if ((particle.behavior === 'flyOut' || particle.behavior === 'flungOut') && dist > window.maxTornadoRadius) {
+          particle.inTornado = false;
+          particle.velocity.y -= G * 3;
+          particle.velocity.x *= 0.9;
+          particle.velocity.z *= 0.9;
+          particle.position.add(particle.velocity);
+          if (particle.position.y <= 0) {
+            particle.position.y = 0;
+            particle.velocity.multiplyScalar(0.5);
+            particle.velocity.y = Math.abs(particle.velocity.y) * 0.3;
+            if (particle.velocity.length() < 0.1) {
+              particle.visible = false;
+            }
+          }
+        } else if (particle.behavior === 'swirl') {
+          if (dist < 10 * window.tornadoScale && !particle.inTornado) {
+            particle.inTornado = true;
+            particle.isSucked = true;
+          }
+          if (particle.inTornado && particle.isSucked) {
+            const direction = tornadoPos.clone().sub(particle.position).normalize();
+            particle.velocity.add(direction.multiplyScalar(0.5));
+            particle.velocity.y += 0.3;
+            if (dist < 6 * window.tornadoScale) particle.isSucked = false;
+          }
+        } else if (particle.behavior === 'flyUp') {
+          particle.velocity.y += 0.1 - G;
+          particle.position.add(particle.velocity);
+          if (particle.position.y > 30) particle.visible = false;
+        } else if (particle.behavior === 'fall') {
+          particle.velocity.y -= G;
+          particle.velocity.x *= 0.95;
+          particle.velocity.z *= 0.95;
+          particle.position.add(particle.velocity);
+          if (particle.position.y <= 0) {
+            particle.position.y = 0;
+            particle.velocity.y = 0;
+            particle.lifeTime += 0.1;
+          }
+        } else if (particle.behavior === 'flyOut') {
+          if (dist < 10 * window.tornadoScale && !particle.inTornado) {
+            particle.inTornado = true;
+            particle.isSucked = true;
+          }
+          if (particle.inTornado && particle.isSucked) {
+            const direction = tornadoPos.clone().sub(particle.position).normalize();
+            particle.velocity.add(direction.multiplyScalar(0.5));
+            particle.velocity.y += 0.3;
+            if (dist < 6 * window.tornadoScale) particle.isSucked = false;
+          } else if (particle.inTornado) {
+            particle.timeInTornado += 0.1;
+            if (particle.timeInTornado > 1) {
+              particle.inTornado = false;
+              const outwardDirection = particle.position.clone().sub(tornadoPos).normalize();
+              particle.velocity.set(outwardDirection.x * (3 + Math.random() * 2), 1 + Math.random() * 2, outwardDirection.z * (3 + Math.random() * 2));
+            }
+          } else {
+            particle.velocity.y -= G;
+            particle.position.add(particle.velocity);
+            if (particle.position.y <= 0) {
+              particle.position.y = 0;
+              particle.velocity.y = 0;
+              particle.lifeTime += 0.1;
+            }
+          }
+        } else if (particle.behavior === 'flungOut') {
+          particle.velocity.y -= G;
+          particle.position.add(particle.velocity);
+          if (particle.position.y <= 0) {
+            particle.position.y = 0;
+            particle.velocity.set(0, 0, 0);
+            particle.isPermanent = true;
+          }
+        }
+        particle.velocity.y -= G;
+        particle.velocity.multiplyScalar(0.98);
+        particle.position.add(particle.velocity);
+        if (particle.position.y < 0) {
+          particle.position.y = 0;
+          particle.velocity.y = 0;
+          if (!particle.isPermanent && !particle.semiPermanent) particle.lifeTime += 0.1;
+        }
+      }
+    });
+
+    if (time - window.lastFlingTime > window.flingInterval) {
+      const swirlParticles = window.disintegrationParticles.filter(p => p.visible && p.behavior === 'swirl' && p.inTornado && !p.isSucked && !p.isPermanent && !p.semiPermanent);
+      if (swirlParticles.length > 0) {
+        const numToFling = Math.min(Math.floor(Math.random() * 3) + 1, swirlParticles.length);
+        for (let i = 0; i < numToFling; i++) {
+          const particle = swirlParticles[i];
+          particle.inTornado = false;
+          particle.behavior = 'flungOut';
+          const outwardDirection = particle.position.clone().sub(tornadoPos).normalize();
+          particle.velocity.set(outwardDirection.x * (5 + Math.random() * 3), 2 + Math.random() * 2, outwardDirection.z * (5 + Math.random() * 3));
+        }
+      }
+      window.lastFlingTime = time;
+    }
+  }
+
+  /**
+   * Makes bushes sway based on proximity to the tornado.
+   */
+  function swayBushes() {
+    window.bushGroup.children.forEach(bush => {
+      const dist = bush.position.distanceTo(tornadoPos);
+      if (dist < 20) {
+        const sway = (20 - dist) / 20 * 0.1;
+        bush.rotation.z = Math.sin(time * 2) * sway;
+        bush.rotation.x = Math.cos(time * 2) * sway;
+      } else {
+        bush.rotation.z = 0;
+        bush.rotation.x = 0;
+      }
+    });
+  }
+
+  /**
+   * Checks and handles internal fence destruction.
+   */
+  function checkFenceDestruction() {
+    const dist = new THREE.Vector3(0, 0, 30).distanceTo(tornadoPos);
+    if (dist < 10 * window.tornadoScale && !window.fenceDestroyed) {
+      window.fenceDestroyed = true;
+      window.internalFenceGroup.visible = false;
+      window.picketDebris.forEach(picket => {
+        picket.visible = true;
+        picket.velocity.set((Math.random() - 0.5) * 2, 2, (Math.random() - 0.5) * 2);
+      });
+      updateScore(30);
+    }
+  }
+
+  /**
+   * Checks and handles perimeter fence destruction.
+   */
+  function checkPerimeterFenceDestruction() {
+    window.perimeterFenceDebris.forEach(obj => {
+      if (!obj.original.visible) return;
+      const dist = obj.original.position.distanceTo(tornadoPos);
+      if (dist < 10 * window.tornadoScale) {
+        obj.original.visible = false;
+        obj.debris.visible = true;
+        obj.debris.position.copy(obj.original.position);
+        obj.debris.velocity.set((Math.random() - 0.5) * 2, 2, (Math.random() - 0.5) * 2);
+
+        const side = obj.original.side;
+        const index = obj.original.index;
+        const adjacentRange = 2;
+        for (let i = Math.max(0, index - adjacentRange); i <= Math.min(index + adjacentRange, 19); i++) {
+          if (i === index) continue;
+          const adjacentPiece = window.perimeterFenceDebris.find(p => p.original.side === side && p.original.index === i);
+          if (adjacentPiece && adjacentPiece.original.visible) {
+            adjacentPiece.original.visible = false;
+            adjacentPiece.debris.visible = true;
+            adjacentPiece.debris.position.copy(adjacentPiece.original.position);
+            adjacentPiece.debris.velocity.set((Math.random() - 0.5) * 2, 2, (Math.random() - 0.5) * 2);
+          }
+        }
+      }
+    });
+  }
+
+  /**
+   * Checks and handles farmhouse destruction.
+   */
+  function checkHouseDestruction() {
+    const dist = tornadoPos.distanceTo(window.houseGroup.position);
+    if (dist < 15 * window.tornadoScale && !window.houseDestroyed) {
+      window.houseGroup.children.forEach((cube, index) => {
+        const cubePos = new THREE.Vector3().copy(cube.position).add(window.houseGroup.position);
+        const cubeDist = cubePos.distanceTo(tornadoPos);
+        if (cubeDist < 10 * window.tornadoScale && !window.houseDebris[index].destroyed) {
+          cube.visible = false;
+          window.houseDebris[index].visible = true;
+          window.houseDebris[index].position.copy(cubePos);
+          window.houseDebris[index].velocity.set((Math.random() - 0.5) * 2, 2, (Math.random() - 0.5) * 2);
+          window.houseDebris[index].destroyed = true;
+        }
+      });
+      if (dist < 5 * window.tornadoScale && !window.houseDestroyed) {
+        window.houseDestroyed = true;
+        window.houseGroup.visible = false;
+        updateScore(100);
+      }
+    }
+  }
+
+  /**
+   * Checks and handles silo destruction.
+   */
+  function checkSiloDestruction() {
+    const dist = tornadoPos.distanceTo(window.siloGroup.position);
+    if (dist < 15 * window.tornadoScale && !window.siloDestroyed) {
+      window.siloGroup.children.forEach((cube, index) => {
+        const cubePos = new THREE.Vector3().copy(cube.position).add(window.siloGroup.position);
+        const cubeDist = cubePos.distanceTo(tornadoPos);
+        if (cubeDist < 10 * window.tornadoScale && !window.siloDebris[index].destroyed) {
+          cube.visible = false;
+          window.siloDebris[index].visible = true;
+          window.siloDebris[index].position.copy(cubePos);
+          window.siloDebris[index].velocity.set((Math.random() - 0.5) * 2, 2, (Math.random() - 0.5) * 2);
+          window.siloDebris[index].destroyed = true;
+        }
+      });
+      if (dist < 5 * window.tornadoScale && !window.siloDestroyed) {
+        window.siloDestroyed = true;
+        window.siloGroup.visible = false;
+        updateScore(50);
+      }
+    }
+  }
+
+  /**
+   * Checks and handles bush destruction.
+   */
+  function checkBushDestruction() {
+    window.bushDebris.forEach(obj => {
+      if (obj.mesh.visible && !obj.mesh.isDestroyed) {
+        const dist = obj.bush.position.distanceTo(tornadoPos);
+        if (dist < 10 * window.tornadoScale) {
+          obj.bush.children[1].visible = false;
+          obj.mesh.visible = true;
+          obj.mesh.position.copy(obj.bush.position);
+          obj.mesh.position.y = 5;
+          obj.mesh.velocity.set((Math.random() - 0.5) * 2, 2, (Math.random() - 0.5) * 2);
+
+          for (let i = 0; i < 20; i++) {
+            const leaf = window.leafParticles.find(l => !l.visible);
+            if (leaf) {
+              leaf.visible = true;
+              leaf.position.copy(obj.bush.position);
+              leaf.position.y = 5;
+              leaf.velocity.set((Math.random() - 0.5) * 2, 2, (Math.random() - 0.5) * 2);
+            }
+          }
+        }
+      }
+    });
+  }
+
+  /**
+   * Updates cloud movement and rain particle positions.
+   */
+  function updateCloudsAndRain() {
+    window.cloudGroup.children.forEach(cloud => {
+      cloud.position.x += Math.sin(time + cloud.position.z) * 0.05;
+      cloud.position.z += Math.cos(time + cloud.position.x) * 0.05;
+    });
+    window.rainParticles.forEach(drop => {
+      drop.position.add(drop.velocity);
+      if (drop.position.y < 0) {
+        drop.position.set((Math.random() - 0.5) * 600, 70 + Math.random() * 50, (Math.random() - 0.5) * 600);
+        drop.velocity.set(0, -1, 0);
+      }
+    });
+  }
+
+  /**
+   * Simulates lightning effects with random timing.
+   */
+  function simulateLightning() {
+    if (Math.random() < 0.01) {
+      window.lightningLight.intensity = 2;
+      const startX = (Math.random() - 0.5) * 50;
+      const startZ = (Math.random() - 0.5) * 50;
+      const endX = startX + (Math.random() - 0.5) * 10;
+      const endZ = startZ + (Math.random() - 0.5) * 10;
+      window.lightningPoints.length = 0;
+      const segments = 20;
+      for (let i = 0; i < segments; i++) {
+        const t = i / (segments - 1);
+        const x = THREE.MathUtils.lerp(startX, endX, t) + (Math.random() - 0.5) * 5;
+        const y = THREE.MathUtils.lerp(50, 0, t);
+        const z = THREE.MathUtils.lerp(startZ, endZ, t) + (Math.random() - 0.5) * 5;
+        window.lightningPoints.push(new THREE.Vector3(x, y, z));
+      }
+      window.lightningLine.geometry.setFromPoints(window.lightningPoints);
+      setTimeout(() => {
+        window.lightningLight.intensity = 0;
+        window.lightningPoints.length = 0;
+        window.lightningLine.geometry.setFromPoints(window.lightningPoints);
+      }, 300);
+    }
+  }
+
+  /**
+   * Updates the player's score.
+   * @param {number} points - Points to add to the score.
+   */
+  function updateScore(points) {
+    score += points;
+    document.getElementById('score').textContent = `Score: ${score}`;
+  }
+
+  /**
+   * Main animation loop for the game.
+   */
+  function animate() {
+    requestAnimationFrame(animate);
+    time += 0.1;
+
+    updateTornado();
+    updateDebris();
+    swayBushes();
+    checkFenceDestruction();
+    checkPerimeterFenceDestruction();
+    checkHouseDestruction();
+    checkSiloDestruction();
+    checkBushDestruction();
+    updateCloudsAndRain();
+    simulateLightning();
+
+    renderer.render(scene, camera);
+  }
+
+  // Global variables for animation
+  window.permanentParticleCount = 0;
+  window.maxPermanentParticles = 200;
+  window.lastFlingTime = 0;
+  window.flingInterval = 3;
+  window.maxTornadoRadius = 15;
+  window.houseDestroyed = false;
+  window.siloDestroyed = false;
+  window.fenceDestroyed = false;
+  window.debrisInTornado = 0;
+  window.maxDebrisCapacity = 50;
+
+  // Initialize the game immediately
+  setupScene();
+  setupEnvironment();
+  setupTornadoAndEffects();
+  setupDebris();
+  setupEventListeners();
+  animate();
+</script>
+</body>
+</html>
